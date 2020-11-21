@@ -1,11 +1,14 @@
 package com.liamnbtech.server.service.connection.remote;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import javax.net.ssl.SSLSocketFactory;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.SocketAddress;
+import java.util.function.Supplier;
 
 /**
  * RemoteConnectionService implementation allowing the creation of secured and unsecured connections to remote servers.
@@ -14,22 +17,29 @@ import java.net.SocketAddress;
 public class RemoteConnectionServiceImpl implements RemoteConnectionService {
 
     private final SSLSocketFactory factory;
+    private final Logger LOG = LoggerFactory.getLogger(this.getClass());
 
-    private static final int SOCKET_CONNECT_TIMEOUT = 3000;
-    private static final int SOCKET_CONNECT_RETRIES = 5;
+    private static final int SOCKET_CONNECT_TIMEOUT = 10000;
+    private static final int SOCKET_CONNECT_RETRIES = 50;
 
     @Override
-    public Socket createConnection(Socket unconnectedSocket, SocketAddress endpoint)
+    public Socket createConnection(Supplier<Socket> socketSupplier, SocketAddress endpoint)
             throws RemoteConnectionCreationException {
 
         Exception connectionError = null;
 
         for (int retry = 0; retry < SOCKET_CONNECT_RETRIES; retry++) {
             try {
-                unconnectedSocket.connect(endpoint, SOCKET_CONNECT_TIMEOUT);
+                // Get an unconnected socket
+                Socket toConnect = socketSupplier.get();
 
-                return unconnectedSocket;
+                // Connect the socket
+                toConnect.connect(endpoint, SOCKET_CONNECT_TIMEOUT);
+
+                // Return the connected socket
+                return toConnect;
             } catch (IOException e) {
+                LOG.error(String.format("Encountered error while creating remote connection: %s", e.getMessage()));
                 connectionError = e;
             }
         }

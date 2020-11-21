@@ -43,4 +43,6 @@ public interface LocalFileService {
      * @param localFilePath The path to the file to be deleted.
      */
     boolean deleteFile(String localFilePath) throws IOException;
+
+    boolean fileExists(String localFilePath) throws IOException;
 }
