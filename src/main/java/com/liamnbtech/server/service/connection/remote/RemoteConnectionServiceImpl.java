@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.IOException;
 import java.net.Socket;
@@ -71,7 +72,7 @@ public class RemoteConnectionServiceImpl implements RemoteConnectionService {
                 socketCreationError);
     }
 
-    public RemoteConnectionServiceImpl(SSLSocketFactory factory) {
-        this.factory = factory;
+    public RemoteConnectionServiceImpl(SSLContext context) {
+        this.factory = context.getSocketFactory();
     }
 }
