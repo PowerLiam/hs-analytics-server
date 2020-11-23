@@ -4,15 +4,22 @@ import com.fasterxml.jackson.core.JsonGenerationException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.liamnbtech.server.client.blizzard.entity.BlizzardApiTokenAuthResponse;
 import com.liamnbtech.server.client.blizzard.entity.BlizzardApiRequest;
 import com.liamnbtech.server.client.blizzard.entity.BlizzardApiResponse;
+import org.apache.tomcat.util.codec.binary.Base64;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 
 import java.io.*;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
@@ -20,8 +27,18 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public class BlizzardApiClientImpl implements BlizzardApiClient {
 
-    private final static String OAUTH_TOKEN_HTTP_HEADER_NAME = "Authorization";
-    private final static String OAUTH_TOKEN_HTTP_HEADER_VALUE_PATTERN = "Bearer %s";
+    private final static Logger LOG = LoggerFactory.getLogger(BlizzardApiClientImpl.class);
+
+    private final static Charset API_CLIENT_CHARSET = StandardCharsets.UTF_8;
+    private final static String OAUTH_TOKEN_REQUEST_URL_PATTERN = "https://%s.battle.net/oauth/token";
+    private final static String HTTP_HEADER_NAME_OATH_TOKEN = "Authorization";
+    private final static String HTTP_HEADER_NAME_OATH_CONTENT_TYPE = "Content-Type";
+    private final static String HTTP_HEADER_VALUE_OATH_CONTENT_TYPE = "application/x-www-form-urlencoded";
+
+    private final static String HTTP_HEADER_VALUE_PATTERN_OAUTH_TOKEN_OBTAIN = "Basic %s";
+    private final static String HTTP_HEADER_VALUE_PATTERN_OAUTH_TOKEN_SUBMIT = "Bearer %s";
+    private final static String HTTP_HEADER_VALUE_PATTERN_OAUTH_TOKEN_SUBMIT_CREDENTIALS = "%s:%s";
+    private final static String HTTP_BODY_OAUTH_TOKEN_OBTAIN = "grant_type=client_credentials";
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -56,7 +73,12 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
             throws BlizzardApiClientException {
 
         // Make sure that this client is initialized, and if it isn't, initialize it!
-        initializeIfNecessary();
+        try {
+            initializeIfNecessary();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BlizzardApiClientException("Failed to initialize API Client", e);
+        }
 
         // Construct the HTTP request to the server.
         HttpRequest apiRequest = constructRequest(request);
@@ -128,7 +150,7 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
         }
     }
 
-    private void initializeIfNecessary() {
+    private void initializeIfNecessary() throws InterruptedException {
         // Only one thread should perform the initialization of this client; all other threads must wait until the first
         // request finishes the initialization process before proceeding.
         if (clientState.get().equals(ClientState.UNINITIALIZED)) {
@@ -140,7 +162,18 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
                 if (clientState.get().equals(ClientState.UNINITIALIZED)) {
                     // This thread was the first to reach this point, it will perform the initialization.  Any other
                     // threads can just proceed.
-                    initialize();
+                    while(true) {
+                        try {
+                            initialize();
+
+                            // Initialization was successful, there is no more work to be done.
+                            break;
+                        } catch (IOException ignored) {
+                            // No threads can proceed with using this client until it is initialized, so this thread
+                            // should keep trying indefinitely until initialization is successful;
+                            LOG.error("Failed to initialize API client; retrying.");
+                        }
+                    }
                 }
             } finally {
                 initializationLock.unlock();
@@ -149,14 +182,40 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
     }
 
     // Only called under lock
-    private void initialize() {
+    private void initialize() throws IOException, InterruptedException {
         refreshClientAccessToken();
-        clientState.set(ClientState.RUNNING);
+        clientState.set(ClientState.INITIALIZED);
 
     }
 
-    private void refreshClientAccessToken() {
-        clientAccessToken.set(null);
+    private void refreshClientAccessToken() throws IOException, InterruptedException {
+        String credentialsString =
+                String.format(HTTP_HEADER_VALUE_PATTERN_OAUTH_TOKEN_SUBMIT_CREDENTIALS,
+                        clientId,
+                        clientSecret);
+
+        String base64EncodedCredentialsString = Base64.encodeBase64String(
+                credentialsString.getBytes(API_CLIENT_CHARSET));
+
+        HttpRequest clientAccessTokenRequest = HttpRequest.newBuilder()
+                .uri(URI.create(String.format(OAUTH_TOKEN_REQUEST_URL_PATTERN, region)))
+                .setHeader(HTTP_HEADER_NAME_OATH_CONTENT_TYPE, HTTP_HEADER_VALUE_OATH_CONTENT_TYPE)
+                .setHeader(
+                        HTTP_HEADER_NAME_OATH_TOKEN,
+                        String.format(HTTP_HEADER_VALUE_PATTERN_OAUTH_TOKEN_OBTAIN, base64EncodedCredentialsString))
+                .POST(HttpRequest.BodyPublishers.ofString(HTTP_BODY_OAUTH_TOKEN_OBTAIN))
+                .build();
+
+        HttpResponse<String> clientAccessTokenResponse = httpClient.send(
+                clientAccessTokenRequest,
+                HttpResponse.BodyHandlers.ofString(API_CLIENT_CHARSET));
+
+        BlizzardApiTokenAuthResponse response = objectMapper.readValue(
+                clientAccessTokenResponse.body().getBytes(API_CLIENT_CHARSET),
+                BlizzardApiTokenAuthResponse.class);
+
+
+        clientAccessToken.set(response.getAccessToken());
     }
 
     private <R extends BlizzardApiResponse> HttpRequest constructRequest(BlizzardApiRequest<R> request)
@@ -166,8 +225,8 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
             // Add info common between all types of requests
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .setHeader(
-                            OAUTH_TOKEN_HTTP_HEADER_NAME,
-                            String.format(OAUTH_TOKEN_HTTP_HEADER_VALUE_PATTERN, clientAccessToken))
+                            HTTP_HEADER_NAME_OATH_TOKEN,
+                            String.format(HTTP_HEADER_VALUE_PATTERN_OAUTH_TOKEN_SUBMIT, clientAccessToken))
                     .uri(request.getUri(region.getFormalText(), objectMapper));
 
 
@@ -232,20 +291,23 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
 
         switch(responseStatus) {
             case UNAUTHORIZED:
-                // If the response indicated that this client was unauthorized then this client should
-                // reinitialize.  Set the state to uninitialized, and then let either this http client
-                // thread, another user request thread, initialize this client again (depending on which
-                // happens to get there first.
-                clientState.set(ClientState.UNINITIALIZED);
-                initializeIfNecessary();
-
-                // The client has been re-initialized (by this thread, or by another thread, it doesn't
-                // matter).  Retry the failed request once more now that the authorization info has been
-                // refreshed, and return the result of that retried request to the user no matter what.
                 try {
+                    // If the response indicated that this client was unauthorized then this client should
+                    // reinitialize.  Set the state to uninitialized, and then let either this http client
+                    // thread, another user request thread, initialize this client again (depending on which
+                    // happens to get there first.
+                    clientState.set(ClientState.UNINITIALIZED);
+                    initializeIfNecessary();
+
+                    // The client has been re-initialized (by this thread, or by another thread, it doesn't
+                    // matter).  Retry the failed request once more now that the authorization info has been
+                    // refreshed, and return the result of that retried request to the user no matter what.
                     return httpClient.send(apiRequest, HttpResponse.BodyHandlers.ofInputStream());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while retrying request after renewing token", e);
                 } catch (Exception e) {
-                    throw new RuntimeException("Encountered exception while retrying request", e);
+                    throw new RuntimeException("Encountered exception while retrying request after renewing token", e);
                 }
         }
 
@@ -256,6 +318,7 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
     private <R extends BlizzardApiResponse> R deserializeBody(BlizzardApiRequest<R> request,
                                                               InputStream responseBodyStream) {
         try {
+            String debug = new String(responseBodyStream.readAllBytes(), API_CLIENT_CHARSET);
             return objectMapper.readValue(responseBodyStream, request.getResponseClass());
         } catch (IOException e) {
             throw new RuntimeException("Could not deserialize API response", e);
@@ -264,6 +327,6 @@ public class BlizzardApiClientImpl implements BlizzardApiClient {
 
     private enum ClientState {
         UNINITIALIZED,
-        RUNNING,
+        INITIALIZED,
     }
 }

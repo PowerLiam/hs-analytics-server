@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Locale;
 
 public class HearthstoneCardsSearchRequest implements BlizzardApiRequest<HearthstoneCardsSearchResponse> {
-    private static final String REQUEST_SCHEME = "HTTP";
+    private static final String REQUEST_SCHEME = "HTTPS";
     private static final String REQUEST_HOST_PATTERN = "%s.api.blizzard.com";
     private static final String REQUEST_PATH = "/hearthstone/cards";
     private static final String REQUEST_LIST_DELIMITER = ",";
@@ -279,13 +279,13 @@ public class HearthstoneCardsSearchRequest implements BlizzardApiRequest<Hearths
         public HearthstoneCardsSearchRequest build() {
             return new HearthstoneCardsSearchRequest(
                     region,
-                    locale.getDisplayName(),
+                    locale == null ? null : locale.getDisplayName(),
                     set,
                     clazz,
-                    String.join(REQUEST_LIST_DELIMITER, manaCost),
-                    String.join(REQUEST_LIST_DELIMITER, attack),
-                    String.join(REQUEST_LIST_DELIMITER, health),
-                    String.join(REQUEST_LIST_DELIMITER, collectible),
+                    manaCost == null ? null : String.join(REQUEST_LIST_DELIMITER, manaCost),
+                    attack == null ? null : String.join(REQUEST_LIST_DELIMITER, attack),
+                    health == null ? null : String.join(REQUEST_LIST_DELIMITER, health),
+                    collectible == null ? null : String.join(REQUEST_LIST_DELIMITER, collectible),
                     rarity,
                     type,
                     minionType,
@@ -305,7 +305,11 @@ public class HearthstoneCardsSearchRequest implements BlizzardApiRequest<Hearths
 
         for (JsonNode objectField : objectRoot) {
             String fieldName = objectField.asText();
-            queryParamStrings.add(UrlUtils.toQueryParamString(fieldName, objectRoot.get(fieldName).asText()));
+            JsonNode fieldValue = objectRoot.get(fieldName);
+
+            if (fieldValue != null && !fieldValue.isNull()) {
+                queryParamStrings.add(UrlUtils.toQueryParamString(fieldName,fieldValue.asText()));
+            }
         }
 
         return UrlUtils.toQueryString(queryParamStrings);
